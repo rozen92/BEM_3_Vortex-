@@ -113,13 +113,21 @@ def main():
             ('GM', '0', 'v', True, 'B')
         ]
 
-    for e, r, i, has_ae, opt in test_models:
-            
+    for pct in DATA_PCTS:
+        df_train_pct = subsample_train(df_train, pct)
+
+        print("\n" + "="*80)
+        print(f" PROPORTION DE DONNÉES D'ENTRAÎNEMENT : {pct}% "
+              f"({df_train_pct['yaw'].nunique()}/{df_train['yaw'].nunique()} yaw)")
+        print("="*80)
+
+        for e, r, i, has_ae, opt in test_models:
+
 
             # On exclut les modes "1+" (qui n'ont pas de sens physique en fait)
             if '1+' in r:
                 continue
-                
+
             ae_label = "DXY" if has_ae else "D0"
             suffixes_for_model = BEM_SUFFIXES if needs_bem_suffix(r) else [None]
 
