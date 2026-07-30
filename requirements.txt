@@ -1,0 +1,19 @@
+# --- Manipulation de données ---
+numpy>=1.20.0
+pandas>=1.3.0
+openpyxl>=3.0.0
+scikit-learn>=1.0.0
+
+# --- Deep Learning (PyTorch) ---
+torch>=1.10.0
+
+# --- Physique et Mathématiques ---
+scipy>=1.7.0
+numba>=0.54.0
+
+# --- Visualisation & Métriques ---
+matplotlib>=3.4.0
+
+# --- Application Streamlit ---
+streamlit>=1.30.0
+pyyaml>=6.0

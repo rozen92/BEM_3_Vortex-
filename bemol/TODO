@@ -1,0 +1,4 @@
+Il faut implémenter le code bemol pour avoir une fonction qui 
+ressort le calcul de la BEM sur la grille de 36 rayons et 72 azimuts
+Ca doit être exactement le même bemol qui a permis de générer les données d'entrainement.
+Il faut faire attention sur les conventions (le signe de F_t me semble t-il).

@@ -1,0 +1,49 @@
+# Ne garder que slides.tex et loadslides.tex
+Slides/slide 10_06_26/*
+Slides/slide 12_05_26/*
+Slides/slide 22_05_26/*
+Slides/slide 01_07_26/*
+schema_tikz/*
+
+# Dossier bemol
+
+bemol/DataMaker/merged/*
+bemol/DataMaker/new_data_sven/*
+bemol/DataMaker/exports/*
+bemol/DataMaker/src/exports/Data
+bemol/DataMaker/main.py
+bemol/DataMaker/debug.py
+bemol/DataMaker/src/PNC.py
+
+# --- Sorties et fichiers générés ---
+images/
+performance/*
+
+!performance/recap_scores_globaux.csv
+
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+
+DataSet/preprocess.py
+DataSet/2/*
+DataSet/Final_DS/*
+.vscode/
+.idea/
+.DS_Store
+pca.py
+test.py
+FatTraining.py
+
+Power_models/debug.py
+Power_models/test_power.py
+Power_models/performance/*
+Power_models/scalers/*
+Power_models/scalers_FBEM/*
+FatTraining/*
+scalers/*
+
+*.png
