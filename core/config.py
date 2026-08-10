@@ -63,7 +63,7 @@ OPTIONS = ['A', 'B']
 # Proportions (en %) des couples (yaw, TSR) d'entraînement utilisées pour entraîner
 # les modèles prédictifs (GM/GV). Les auto-encodeurs, eux, sont toujours entraînés
 # sur 100% des données (voir training/run_train_eval.py, Phase 1).
-DATA_PCTS = [100]
+DATA_PCTS = [50]
 
 AE_NATURES = ['V', 'M']
 AE_DIMS = [16, 32, 64, 128, 256, 512, 1024]

@@ -3,6 +3,7 @@ import optuna
 import json
 import torch
 import os
+import time
 import numpy as np
 import pickle
 from core.models import TurbineMLP, TurbineCNN, ConvolutionalAutoencoder, LinearAutoencoder, PolarSurrogate, TurbineLoss, TorchScaler, convert_v_to_f_torch, adapt_ae_output_to_target, gv_to_gm_format
@@ -235,13 +236,16 @@ def optimize(df_train, entree, residuelle, inter, has_ae, option, model_base_nam
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study_model = optuna.create_study(direction='minimize', pruner=optuna.pruners.MedianPruner(n_warmup_steps=PRUNER_WARMUP))
+    t_opt0 = time.perf_counter()
     study_model.optimize(objective_model, n_trials=n_trials, show_progress_bar=True)
-    
+    optim_time_s = time.perf_counter() - t_opt0
+
     best_params = study_model.best_params
     best_params.update({
         "ae_nature": study_model.best_trial.user_attrs["ae_nature"], "ae_dim": study_model.best_trial.user_attrs["ae_dim"],
         "l1": study_model.best_trial.user_attrs["l1"], "l2": study_model.best_trial.user_attrs["l2"], "l3": study_model.best_trial.user_attrs["l3"],
-        "Total_Score_CV": study_model.best_value
+        "Total_Score_CV": study_model.best_value,
+        "optim_time_s": optim_time_s
     })
     
     if has_ae:

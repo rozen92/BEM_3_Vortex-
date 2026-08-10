@@ -222,8 +222,8 @@ def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, base
     if has_plus and current_ae is not None:
         n_scalaires = 2 if 'TSR' in df_train.columns else 1
         with torch.no_grad():
-            Y_bem_train = format_bem_as_Y(df_train, entree, inter, scaler_Y, device)
-            Y_bem_test  = format_bem_as_Y(df_test,  entree, inter, scaler_Y, device)
+            Y_bem_train = format_bem_as_Y(df_train, entree, inter, scaler_Y, bem_suffix, device)
+            Y_bem_test  = format_bem_as_Y(df_test,  entree, inter, scaler_Y, bem_suffix, device)
             if entree == 'GV':
                 tr_cnn = gv_to_gm_format(Y_bem_train)
                 te_cnn = gv_to_gm_format(Y_bem_test)
@@ -325,7 +325,8 @@ def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, base
     tqdm.write(f"   [2/2] Entraînement Final...")
     model_final = model_class(**model_kwargs).to(device)
     model_final, _ = fit_model(model=model_final, X=X_train, Y=Y_train, criterion=criterion_builder(None,None), epochs=EPOCHS_FINAL, lr=best_params['lr'], device=device, inter=inter, v_bem_phys=V_BEM_phys_train, D_phys=D_train_full, f_bem_phys=F_BEM_phys_train, v_app=V_app_full_train, u_inf=u_inf_full, show_progress=False)
-    pbar.set_postfix_str(f"Train : {time.perf_counter()-t0:.1f}s")
+    train_time_s = time.perf_counter() - t0
+    pbar.set_postfix_str(f"Train : {train_time_s:.1f}s")
     pbar.update(1)
 
     model_final.eval()
@@ -353,7 +354,8 @@ def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, base
         df_res_ae = denorm_and_reconstruct(df_test, preds_coeffs_ae, entree, residuelle, inter, is_cnn, bem_suffix)
         AE_Score_A, AE_Score_B, AE_Score_C = score_ABC(df_res_ae)
 
-    pbar.set_postfix_str(f"Inférence : {time.perf_counter()-t0:.1f}s")
+    eval_time_s = time.perf_counter() - t0
+    pbar.set_postfix_str(f"Inférence : {eval_time_s:.1f}s")
     pbar.update(1)
 
     # ── Étape 5 : Métriques & sauvegarde ──────────────────────────────────
@@ -375,6 +377,23 @@ def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, base
     m_g, m_h = np.sqrt(np.mean((Cp_p - Cp_s)**2)), np.sqrt(np.mean((Ct_p - Ct_s)**2))
     m_i, m_j = np.sqrt(np.mean(((Cp_p - Cp_s) / np.abs(Cp_s))**2)) * 100, np.sqrt(np.mean(((Ct_p - Ct_s) / np.abs(Ct_s))**2)) * 100
 
+    # Erreurs ponctuelles (une valeur par ligne de df_res, donc par combinaison r/theta/yaw/TSR)
+    # utilisées pour quantifier l'homogénéité des scores A/B (moyennes/RMS) via écart-type + max.
+    err_fn_abs, err_ft_abs = np.abs(Fn_p - Fn_s), np.abs(Ft_p - Ft_s)
+    err_fn_rel = np.abs((Fn_p - Fn_s) / np.abs(Fn_s)) * 100
+    err_ft_rel = np.abs((Ft_p - Ft_s) / np.maximum(np.abs(Ft_s), 1.0)) * 100
+    err_fn_normD = np.abs((Fn_p/D_res) - (Fn_s/D_res)) * 100
+    err_ft_normD = np.abs((Ft_p/D_res) - (Ft_s/D_res)) * 100
+
+    # Idem pour C, mais à la granularité (yaw, TSR) sur laquelle Cp/Ct sont réellement définis
+    # (avant broadcast sur toutes les lignes de df_res via .map()).
+    cp_ct_sven_aligned = cp_ct_sven.reindex(cp_ct_pred.index)
+    Cp_p_u, Ct_p_u = cp_ct_pred['Cp_pred'].values, cp_ct_pred['Ct_pred'].values
+    Cp_s_u, Ct_s_u = cp_ct_sven_aligned['Cp_SVEN'].values, cp_ct_sven_aligned['Ct_SVEN'].values
+    err_cp_abs_u, err_ct_abs_u = np.abs(Cp_p_u - Cp_s_u), np.abs(Ct_p_u - Ct_s_u)
+    err_cp_rel_u = np.abs((Cp_p_u - Cp_s_u) / np.abs(Cp_s_u)) * 100
+    err_ct_rel_u = np.abs((Ct_p_u - Ct_s_u) / np.abs(Ct_s_u)) * 100
+
     Score_A, Score_B, Score_C = m_c + m_d, m_e + m_f, m_i + m_j
     wd_fn = wasserstein_distance(Fn_s, Fn_p)
     wd_ft = wasserstein_distance(Ft_s, Ft_p)
@@ -393,22 +412,22 @@ def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, base
         torch.save(model_final.state_dict(), f"training/models/{entree}/{final_model_name}.pth")
         print(f"   [SAUVEGARDE] Ratio AB {best_ratio_AB:.2f}x > {RATIO_THRESHOLD}.")
 
-    save_to_xlsx(XLSX_PATH, "recap_dico", {"Modele": final_model_name, "Entree": entree, "Residuelle": residuelle, "Inter": inter, "Has_AE": has_ae, "AE_Nature": ae_nature, "AE_Dim": ae_dim, "Option_Loss": option, "L1": round(l1, 2), "L2": round(l2, 2), "L3": round(l3, 2)})
-    super_dict = {"Modele": final_model_name, "Best_Metric": best_metric_AB, "BEM_Ratio_C": round(ratio_C, 2), "Best_BEM_Ratio_AB": round(best_ratio_AB, 2)}
+    total_params = sum(p.numel() for p in model_final.parameters())
+    width_param = best_params['n_neurons'] if entree == 'GV' else best_params['base_filters']
+    optim_time_s = best_params.get("optim_time_s")
+
+    save_to_xlsx(XLSX_PATH, "recap_dico", {"Modele": final_model_name, "Entree": entree, "Residuelle": residuelle, "Inter": inter, "Has_AE": has_ae, "AE_Nature": ae_nature, "AE_Dim": ae_dim, "Option_Loss": option, "L1": round(l1, 2), "L2": round(l2, 2), "L3": round(l3, 2), "Lr": best_params['lr'], "N_Layers": best_params['n_layers'], "N_Neurons_Or_Filters": width_param, "Total_Params": total_params})
+    super_dict = {"Modele": final_model_name, "Best_Metric": best_metric_AB, "BEM_Ratio_C": round(ratio_C, 2), "Best_BEM_Ratio_AB": round(best_ratio_AB, 2), "WD_Total": round(wd_total, 4), "Optim_Time_s": round(optim_time_s, 1) if optim_time_s is not None else None, "Train_Eval_Time_s": round(train_time_s + eval_time_s, 1)}
     if has_ae:
         super_dict.update({"AE_Score_A": round(AE_Score_A, 2), "AE_Score_B": round(AE_Score_B, 2), "AE_Score_C": round(AE_Score_C, 2)})
     save_to_xlsx(XLSX_PATH, "recap_super", super_dict)
-    save_to_xlsx(XLSX_PATH, "recap_cross_val", {
-        "Modele": final_model_name,
-        "CV_Score_A": round(mean_cv_score['A'], 2), "CV_Std_A": round(std_cv_score['A'], 2),
-        "CV_Score_B": round(mean_cv_score['B'], 2), "CV_Std_B": round(std_cv_score['B'], 2),
-        "CV_Score_C": round(mean_cv_score['C'], 2), "CV_Std_C": round(std_cv_score['C'], 2),
-    })
-    save_to_xlsx(XLSX_PATH, "recap_Fn", {"Modele": final_model_name, "err_abs_Nm": round(m_a, 4), "err_rel_%": round(m_c, 2), "err_normD_%": round(m_e, 2), "WD_Fn": round(wd_fn, 4)})
-    save_to_xlsx(XLSX_PATH, "recap_Ft", {"Modele": final_model_name, "err_abs_Nm": round(m_b, 4), "err_rel_%": round(m_d, 2), "err_normD_%": round(m_f, 2), "WD_Ft": round(wd_ft, 4)})
-    save_to_xlsx(XLSX_PATH, "recap_C_P", {"Modele": final_model_name, "err_abs": round(m_g, 6), "err_%": round(m_i, 2), "WD_Cp": round(wd_cp, 6)})
-    save_to_xlsx(XLSX_PATH, "recap_C_T", {"Modele": final_model_name, "err_abs": round(m_h, 6), "err_%": round(m_j, 2), "WD_Ct": round(wd_ct, 6)})
-    save_to_xlsx(XLSX_PATH, "recap_globaux", {"Modele": final_model_name, "Score_A": round(Score_A, 2), "Score_B": round(Score_B, 2), "Score_C": round(Score_C, 2), "WD_Total": round(wd_total, 4)})
+    save_to_xlsx(XLSX_PATH, "recap_Fn", {"Modele": final_model_name, "err_abs_Nm": round(m_a, 4), "Std_err_abs_Nm": round(err_fn_abs.std(), 4), "Max_err_abs_Nm": round(err_fn_abs.max(), 4), "err_rel_%": round(m_c, 2), "Std_err_rel_%": round(err_fn_rel.std(), 2), "Max_err_rel_%": round(err_fn_rel.max(), 2), "err_normD_%": round(m_e, 2), "Std_err_normD_%": round(err_fn_normD.std(), 2), "Max_err_normD_%": round(err_fn_normD.max(), 2), "WD_Fn": round(wd_fn, 4)})
+    save_to_xlsx(XLSX_PATH, "recap_Ft", {"Modele": final_model_name, "err_abs_Nm": round(m_b, 4), "Std_err_abs_Nm": round(err_ft_abs.std(), 4), "Max_err_abs_Nm": round(err_ft_abs.max(), 4), "err_rel_%": round(m_d, 2), "Std_err_rel_%": round(err_ft_rel.std(), 2), "Max_err_rel_%": round(err_ft_rel.max(), 2), "err_normD_%": round(m_f, 2), "Std_err_normD_%": round(err_ft_normD.std(), 2), "Max_err_normD_%": round(err_ft_normD.max(), 2), "WD_Ft": round(wd_ft, 4)})
+    save_to_xlsx(XLSX_PATH, "recap_C_P", {"Modele": final_model_name, "err_abs": round(m_g, 6), "Std_err_abs": round(err_cp_abs_u.std(), 6), "Max_err_abs": round(err_cp_abs_u.max(), 6), "err_%": round(m_i, 2), "Std_err_%": round(err_cp_rel_u.std(), 2), "Max_err_%": round(err_cp_rel_u.max(), 2), "WD_Cp": round(wd_cp, 6)})
+    save_to_xlsx(XLSX_PATH, "recap_C_T", {"Modele": final_model_name, "err_abs": round(m_h, 6), "Std_err_abs": round(err_ct_abs_u.std(), 6), "Max_err_abs": round(err_ct_abs_u.max(), 6), "err_%": round(m_j, 2), "Std_err_%": round(err_ct_rel_u.std(), 2), "Max_err_%": round(err_ct_rel_u.max(), 2), "WD_Ct": round(wd_ct, 6)})
+    save_to_xlsx(XLSX_PATH, "recap_A", {"Modele": final_model_name, "Score_A": round(Score_A, 2), "CV_Score_A": round(mean_cv_score['A'], 2), "CV_Std_A": round(std_cv_score['A'], 2), "Std_A": round(np.std(np.concatenate([err_fn_rel, err_ft_rel])), 2), "Max_Err_A": round(np.max(np.concatenate([err_fn_rel, err_ft_rel])), 2)})
+    save_to_xlsx(XLSX_PATH, "recap_B", {"Modele": final_model_name, "Score_B": round(Score_B, 2), "CV_Score_B": round(mean_cv_score['B'], 2), "CV_Std_B": round(std_cv_score['B'], 2), "Std_B": round(np.std(np.concatenate([err_fn_normD, err_ft_normD])), 2), "Max_Err_B": round(np.max(np.concatenate([err_fn_normD, err_ft_normD])), 2)})
+    save_to_xlsx(XLSX_PATH, "recap_C", {"Modele": final_model_name, "Score_C": round(Score_C, 2), "CV_Score_C": round(mean_cv_score['C'], 2), "CV_Std_C": round(std_cv_score['C'], 2), "Std_C": round(np.std(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2), "Max_Err_C": round(np.max(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2)})
     pbar.set_postfix_str(f"Métriques : {time.perf_counter()-t0:.1f}s")
     pbar.update(1)
     pbar.close()
@@ -433,6 +452,20 @@ def evaluate_baselines(df_test, bem_suffix):
     m_g, m_h = np.sqrt(np.mean((Cp_b - Cp_s)**2)), np.sqrt(np.mean((Ct_b - Ct_s)**2))
     m_i, m_j = np.sqrt(np.mean(((Cp_b - Cp_s) / np.abs(Cp_s))**2)) * 100, np.sqrt(np.mean(((Ct_b - Ct_s) / np.abs(Ct_s))**2)) * 100
 
+    # Erreurs ponctuelles (mêmes conventions que dans evaluator) pour les colonnes Std/Max des recaps A/B/C et Fn/Ft/C_P/C_T.
+    err_fn_abs, err_ft_abs = np.abs(Fn_b - Fn_s), np.abs(Ft_b - Ft_s)
+    err_fn_rel = np.abs((Fn_b - Fn_s) / np.abs(Fn_s)) * 100
+    err_ft_rel = np.abs((Ft_b - Ft_s) / np.maximum(np.abs(Ft_s), 1.0)) * 100
+    err_fn_normD = np.abs((Fn_b/D_res) - (Fn_s/D_res)) * 100
+    err_ft_normD = np.abs((Ft_b/D_res) - (Ft_s/D_res)) * 100
+
+    c_sven_aligned = c_sven.reindex(c_bem.index)
+    Cp_b_u, Ct_b_u = c_bem[f'Cp_{bem_model_name}'].values, c_bem[f'Ct_{bem_model_name}'].values
+    Cp_s_u, Ct_s_u = c_sven_aligned['Cp_SVEN'].values, c_sven_aligned['Ct_SVEN'].values
+    err_cp_abs_u, err_ct_abs_u = np.abs(Cp_b_u - Cp_s_u), np.abs(Ct_b_u - Ct_s_u)
+    err_cp_rel_u = np.abs((Cp_b_u - Cp_s_u) / np.abs(Cp_s_u)) * 100
+    err_ct_rel_u = np.abs((Ct_b_u - Ct_s_u) / np.abs(Ct_s_u)) * 100
+
     wd_fn = wasserstein_distance(Fn_s, Fn_b)
     wd_ft = wasserstein_distance(Ft_s, Ft_b)
     wd_cp = wasserstein_distance(Cp_s, Cp_b)
@@ -440,11 +473,13 @@ def evaluate_baselines(df_test, bem_suffix):
     wd_total = wasserstein_distance(np.concatenate([Fn_s, Ft_s]), np.concatenate([Fn_b, Ft_b]))
 
     base_dict = {"Modele": f"BASELINE_BEM_{bem_suffix}"}
-    save_to_xlsx(XLSX_PATH, "recap_super", {**base_dict, "BEM_Ratio_C": 1.00, "Best_BEM_Ratio_AB": 1.00})
-    save_to_xlsx(XLSX_PATH, "recap_Fn", {**base_dict, "err_abs_Nm": round(m_a, 4), "err_rel_%": round(m_c, 2), "err_normD_%": round(m_e, 2), "WD_Fn": round(wd_fn, 4)})
-    save_to_xlsx(XLSX_PATH, "recap_Ft", {**base_dict, "err_abs_Nm": round(m_b, 4), "err_rel_%": round(m_d, 2), "err_normD_%": round(m_f, 2), "WD_Ft": round(wd_ft, 4)})
-    save_to_xlsx(XLSX_PATH, "recap_C_P", {**base_dict, "err_abs": round(m_g, 6), "err_%": round(m_i, 2), "WD_Cp": round(wd_cp, 6)})
-    save_to_xlsx(XLSX_PATH, "recap_C_T", {**base_dict, "err_abs": round(m_h, 6), "err_%": round(m_j, 2), "WD_Ct": round(wd_ct, 6)})
-    save_to_xlsx(XLSX_PATH, "recap_globaux", {**base_dict, "Score_A": round(m_c+m_d, 2), "Score_B": round(m_e+m_f, 2), "Score_C": round(m_i+m_j, 2), "WD_Total": round(wd_total, 4)})
+    save_to_xlsx(XLSX_PATH, "recap_super", {**base_dict, "BEM_Ratio_C": 1.00, "Best_BEM_Ratio_AB": 1.00, "WD_Total": round(wd_total, 4)})
+    save_to_xlsx(XLSX_PATH, "recap_Fn", {**base_dict, "err_abs_Nm": round(m_a, 4), "Std_err_abs_Nm": round(err_fn_abs.std(), 4), "Max_err_abs_Nm": round(err_fn_abs.max(), 4), "err_rel_%": round(m_c, 2), "Std_err_rel_%": round(err_fn_rel.std(), 2), "Max_err_rel_%": round(err_fn_rel.max(), 2), "err_normD_%": round(m_e, 2), "Std_err_normD_%": round(err_fn_normD.std(), 2), "Max_err_normD_%": round(err_fn_normD.max(), 2), "WD_Fn": round(wd_fn, 4)})
+    save_to_xlsx(XLSX_PATH, "recap_Ft", {**base_dict, "err_abs_Nm": round(m_b, 4), "Std_err_abs_Nm": round(err_ft_abs.std(), 4), "Max_err_abs_Nm": round(err_ft_abs.max(), 4), "err_rel_%": round(m_d, 2), "Std_err_rel_%": round(err_ft_rel.std(), 2), "Max_err_rel_%": round(err_ft_rel.max(), 2), "err_normD_%": round(m_f, 2), "Std_err_normD_%": round(err_ft_normD.std(), 2), "Max_err_normD_%": round(err_ft_normD.max(), 2), "WD_Ft": round(wd_ft, 4)})
+    save_to_xlsx(XLSX_PATH, "recap_C_P", {**base_dict, "err_abs": round(m_g, 6), "Std_err_abs": round(err_cp_abs_u.std(), 6), "Max_err_abs": round(err_cp_abs_u.max(), 6), "err_%": round(m_i, 2), "Std_err_%": round(err_cp_rel_u.std(), 2), "Max_err_%": round(err_cp_rel_u.max(), 2), "WD_Cp": round(wd_cp, 6)})
+    save_to_xlsx(XLSX_PATH, "recap_C_T", {**base_dict, "err_abs": round(m_h, 6), "Std_err_abs": round(err_ct_abs_u.std(), 6), "Max_err_abs": round(err_ct_abs_u.max(), 6), "err_%": round(m_j, 2), "Std_err_%": round(err_ct_rel_u.std(), 2), "Max_err_%": round(err_ct_rel_u.max(), 2), "WD_Ct": round(wd_ct, 6)})
+    save_to_xlsx(XLSX_PATH, "recap_A", {**base_dict, "Score_A": round(m_c+m_d, 2), "Std_A": round(np.std(np.concatenate([err_fn_rel, err_ft_rel])), 2), "Max_Err_A": round(np.max(np.concatenate([err_fn_rel, err_ft_rel])), 2)})
+    save_to_xlsx(XLSX_PATH, "recap_B", {**base_dict, "Score_B": round(m_e+m_f, 2), "Std_B": round(np.std(np.concatenate([err_fn_normD, err_ft_normD])), 2), "Max_Err_B": round(np.max(np.concatenate([err_fn_normD, err_ft_normD])), 2)})
+    save_to_xlsx(XLSX_PATH, "recap_C", {**base_dict, "Score_C": round(m_i+m_j, 2), "Std_C": round(np.std(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2), "Max_Err_C": round(np.max(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2)})
 
     return {'A': m_c + m_d, 'B': m_e + m_f, 'C': m_i + m_j}
