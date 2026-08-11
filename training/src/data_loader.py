@@ -166,8 +166,8 @@ def format_data(df, entree, residuelle, inter, is_train=True, device='cpu', bem_
             yaw_grid = np.full_like(r_grid, group['yaw'].iloc[0])
             
             # --- Création de l'Entrée X ---
-            # Modèles BEM (1/2/2+) : pas de canaux (yaw, TSR), seuls les canaux BEM sont ajoutés en plus de r/theta/v_app.
-            x_channels = [r_grid, theta_grid, v_app_grid]
+            
+            x_channels = [r_grid, theta_grid]
             if res_str not in ['1', '2'] and not has_plus:
                 x_channels.append(yaw_grid)
                 if 'TSR' in group.columns:
