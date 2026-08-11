@@ -10,7 +10,7 @@ from core.models import TurbineMLP, TurbineCNN, ConvolutionalAutoencoder, Linear
 from training.src.data_loader import format_data, get_D_tensor, get_V_app_tensor, format_bem_as_Y
 from training.src.trainer import cross_validate
 from core.physics import get_geometry, compute_dynamic_pressure_D
-from core.config import EPOCHS_OPTUNA, CV_SPLITS, LR_BOUNDS_NOAE, LR_BOUNDS_AE, DROPOUT_BOUNDS, MLP_LAYERS_BOUNDS, MLP_NEURONS_CHOICES, CNN_LAYERS_BOUNDS, CNN_FILTERS_CHOICES, PRUNER_WARMUP, AE_NATURES, AE_DIMS, AE_JSON_PATH, AE_WEIGHTS_DIR, RHO, OMEGA, R_ROTOR, format_scaler_name, format_ae_key
+from core.config import EPOCHS_OPTUNA, CV_SPLITS, LR_BOUNDS_NOAE, LR_BOUNDS_AE, DROPOUT_BOUNDS, MLP_LAYERS_BOUNDS, MLP_NEURONS_CHOICES, CNN_LAYERS_BOUNDS, CNN_FILTERS_CHOICES, PRUNER_WARMUP, PRUNER_REPORT_INTERVAL, AE_NATURES, AE_DIMS, AE_JSON_PATH, AE_WEIGHTS_DIR, RHO, OMEGA, R_ROTOR, format_scaler_name, format_ae_key
 
 def get_u_inf_tensor(df, device='cpu'):
     u_inf_list = []
@@ -34,7 +34,6 @@ def optimize(df_train, entree, residuelle, inter, has_ae, option, model_base_nam
 
     # Précalcul du BEM dans l'espace Y (pour encodage dans objective_model si '2+')
     Y_bem_full = format_bem_as_Y(df_train, entree, inter, scaler_Y, bem_suffix, device) if has_plus else None
-    n_scalaires_full = (2 if 'TSR' in df_train.columns else 1) if has_plus else 0
 
     u_inf_full = get_u_inf_tensor(df_train, device)
 
@@ -183,7 +182,7 @@ def optimize(df_train, entree, residuelle, inter, has_ae, option, model_base_nam
                     y_bem_cnn = gv_to_gm_format(Y_bem_full)
                     y_bem_input = y_bem_cnn.reshape(Y_bem_full.size(0), -1) if ae_nature == 'V' else y_bem_cnn
                     z_bem = current_ae.encode(y_bem_input)
-                    X_trial = torch.cat([X_full[:, :n_scalaires_full], z_bem], dim=1)
+                    X_trial = z_bem
                 else:  # GM
                     y_bem_input = Y_bem_full.reshape(Y_bem_full.size(0), -1) if ae_nature == 'V' else Y_bem_full
                     z_bem = current_ae.encode(y_bem_input)
@@ -219,7 +218,7 @@ def optimize(df_train, entree, residuelle, inter, has_ae, option, model_base_nam
             X_full=X_trial, Y_full=Y_full, model_class=model_class, model_kwargs=model_kwargs,
             criterion_builder=criterion_builder, epochs=EPOCHS_OPTUNA, lr=lr, n_splits=CV_SPLITS, 
             device=device, inter=inter, v_bem_phys_full=V_BEM_phys_full, D_phys_full=D_full, f_bem_phys_full=F_BEM_phys_full, v_app_full=V_app_full, u_inf_full=u_inf_full,
-            compute_metrics_fn=metric_fn, trial=trial
+            compute_metrics_fn=metric_fn, trial=trial, pruner_report_interval=PRUNER_REPORT_INTERVAL
         )
 
         trial.set_user_attr("cv_score_phys", mean_custom_score)

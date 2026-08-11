@@ -103,8 +103,9 @@ def format_ae_key(residuelle, inter, ae_nature, ae_dim, bem_suffix=None):
 # =========================================================================
 # HYPERPARAMÈTRES D'ENTRAÎNEMENT & OPTUNA
 # =========================================================================
-PRUNER_WARMUP = 150      
-RATIO_THRESHOLD = 2.5    
+PRUNER_WARMUP = 150
+PRUNER_REPORT_INTERVAL = 10   # le pruner ne juge la CV que tous les N epochs (moins de bruit)
+RATIO_THRESHOLD = 2.5
 
 AE_JSON_PATH = "training/hyperparametres/ae_hyperparameters.json"
 AE_WEIGHTS_DIR = "training/models/ae/"

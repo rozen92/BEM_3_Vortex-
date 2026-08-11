@@ -49,7 +49,7 @@ def evaluate_model(model, X_eval, Y_eval, criterion, device, inter=None, v_bem_p
         loss = criterion(preds, Y_eval, **kwargs)
     return loss.item(), preds
 
-def fit_model(model, X, Y, criterion, epochs, lr, device, inter=None, v_bem_phys=None, D_phys=None, f_bem_phys=None, v_app=None, u_inf=None, show_progress=True, trial=None, fold=0):
+def fit_model(model, X, Y, criterion, epochs, lr, device, inter=None, v_bem_phys=None, D_phys=None, f_bem_phys=None, v_app=None, u_inf=None, show_progress=True):
     model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     best_loss = float('inf')
@@ -61,16 +61,11 @@ def fit_model(model, X, Y, criterion, epochs, lr, device, inter=None, v_bem_phys
 
     for epoch in iterator:
         loss = train_one_epoch(model, X, Y, optimizer, criterion, device, inter, v_bem_phys, D_phys, f_bem_phys, v_app, u_inf)
-        
+
         if loss < best_loss:
             best_loss = loss
             best_weights = copy.deepcopy(model.state_dict())
-            
-        if trial is not None and fold == 0:
-            trial.report(loss, epoch)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
-                
+
         if show_progress and (epoch + 1) % 50 == 0:
             if hasattr(iterator, 'set_postfix'):
                 iterator.set_postfix({"Loss": f"{loss:.6f}"})
@@ -81,52 +76,66 @@ def fit_model(model, X, Y, criterion, epochs, lr, device, inter=None, v_bem_phys
 
 def cross_validate(X_full, Y_full, model_class, model_kwargs, criterion_builder, epochs, lr,
                    n_splits=3, device='cpu', inter=None, v_bem_phys_full=None, D_phys_full=None, f_bem_phys_full=None, v_app_full=None, u_inf_full=None,
-                   compute_metrics_fn=None, metrics_kwargs=None, trial=None):
+                   compute_metrics_fn=None, metrics_kwargs=None, trial=None, pruner_report_interval=1):
+
+    def slice_full(tensor_full, idx):
+        return tensor_full[idx] if tensor_full is not None else None
 
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+    # Un modèle/optimiseur/critère par fold, entraînés en parallèle epoch par epoch,
+    # pour que le pruner Optuna juge sur l'erreur moyenne de la CV entière et non sur un seul fold.
+    folds = []
+    for train_idx, val_idx in kf.split(X_full.cpu().numpy()):
+        model = model_class(**model_kwargs).to(device)
+        folds.append({
+            'train_idx': train_idx, 'val_idx': val_idx,
+            'model': model,
+            'optimizer': torch.optim.Adam(model.parameters(), lr=lr),
+            'criterion': criterion_builder(train_idx, val_idx),
+            'best_loss': float('inf'),
+            'best_weights': None,
+        })
+
+    for epoch in range(epochs):
+        epoch_losses = []
+        for fold in folds:
+            train_idx = fold['train_idx']
+            loss = train_one_epoch(
+                fold['model'], X_full[train_idx], Y_full[train_idx], fold['optimizer'], fold['criterion'], device, inter,
+                slice_full(v_bem_phys_full, train_idx), slice_full(D_phys_full, train_idx),
+                slice_full(f_bem_phys_full, train_idx), slice_full(v_app_full, train_idx), slice_full(u_inf_full, train_idx)
+            )
+            epoch_losses.append(loss)
+            if loss < fold['best_loss']:
+                fold['best_loss'] = loss
+                fold['best_weights'] = copy.deepcopy(fold['model'].state_dict())
+
+        if trial is not None and (epoch + 1) % pruner_report_interval == 0:
+            trial.report(float(np.mean(epoch_losses)), epoch)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
     cv_losses = []
     cv_custom_scores = []
+    for fold in folds:
+        if fold['best_weights'] is not None:
+            fold['model'].load_state_dict(fold['best_weights'])
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(X_full.cpu().numpy())):
-        X_tr, Y_tr = X_full[train_idx], Y_full[train_idx]
+        val_idx = fold['val_idx']
         X_val, Y_val = X_full[val_idx], Y_full[val_idx]
-
-        v_bem_tr = v_bem_phys_full[train_idx] if v_bem_phys_full is not None else None
-        v_bem_val = v_bem_phys_full[val_idx] if v_bem_phys_full is not None else None
-
-        D_tr = D_phys_full[train_idx] if D_phys_full is not None else None
-        D_val = D_phys_full[val_idx] if D_phys_full is not None else None
-
-        f_bem_tr = f_bem_phys_full[train_idx] if f_bem_phys_full is not None else None
-        f_bem_val = f_bem_phys_full[val_idx] if f_bem_phys_full is not None else None
-
-        v_app_tr = v_app_full[train_idx] if v_app_full is not None else None
-        v_app_val = v_app_full[val_idx] if v_app_full is not None else None
-
-        u_inf_tr = u_inf_full[train_idx] if u_inf_full is not None else None
-        u_inf_val = u_inf_full[val_idx] if u_inf_full is not None else None
-
-        model = model_class(**model_kwargs).to(device)
-        criterion = criterion_builder(train_idx, val_idx)
-
-        model, _ = fit_model(
-            model=model, X=X_tr, Y=Y_tr, criterion=criterion,
-            epochs=epochs, lr=lr, device=device, inter=inter,
-            v_bem_phys=v_bem_tr, D_phys=D_tr, f_bem_phys=f_bem_tr, v_app=v_app_tr, u_inf=u_inf_tr,
-            show_progress=False, trial=trial, fold=fold
-        )
-
         val_loss, preds_val = evaluate_model(
-            model, X_val, Y_val, criterion, device, inter,
-            v_bem_phys=v_bem_val, D_phys=D_val, f_bem_phys=f_bem_val, v_app=v_app_val, u_inf=u_inf_val
+            fold['model'], X_val, Y_val, fold['criterion'], device, inter,
+            v_bem_phys=slice_full(v_bem_phys_full, val_idx), D_phys=slice_full(D_phys_full, val_idx),
+            f_bem_phys=slice_full(f_bem_phys_full, val_idx), v_app=slice_full(v_app_full, val_idx), u_inf=slice_full(u_inf_full, val_idx)
         )
         cv_losses.append(val_loss)
-        
+
         if compute_metrics_fn is not None:
             kwargs = metrics_kwargs or {}
-            score = compute_metrics_fn(model, X_val, Y_val, val_idx, preds_val, **kwargs)
+            score = compute_metrics_fn(fold['model'], X_val, Y_val, val_idx, preds_val, **kwargs)
             cv_custom_scores.append(score)
-            
+
     mean_val_loss = np.mean(cv_losses)
     if cv_custom_scores and isinstance(cv_custom_scores[0], dict):
         keys = cv_custom_scores[0].keys()

@@ -95,10 +95,14 @@ def format_data(df, entree, residuelle, inter, is_train=True, device='cpu', bem_
             group = group.sort_values(['theta', 'r'])
             
             # --- Création de l'Entrée X ---
-            x_val = [group['yaw'].iloc[0]]
-            if 'TSR' in group.columns: 
-                x_val.append(group['TSR'].iloc[0])
-                
+            # Modèles BEM (1/2/2+) : X ne contient que le champ de forces BEM, plus (yaw, TSR).
+            # Modèle '0' (sans BEM) : X reste (yaw, TSR).
+            x_val = []
+            if res_str not in ['1', '2'] and not has_plus:
+                x_val.append(group['yaw'].iloc[0])
+                if 'TSR' in group.columns:
+                    x_val.append(group['TSR'].iloc[0])
+
             # Si mode '1' ou '2' ou '1+' ou '2+', on intègre l'information BEM dans X
             if res_str in ['1', '2'] or has_plus:
                 if inter == 'f':
@@ -162,11 +166,14 @@ def format_data(df, entree, residuelle, inter, is_train=True, device='cpu', bem_
             yaw_grid = np.full_like(r_grid, group['yaw'].iloc[0])
             
             # --- Création de l'Entrée X ---
-            x_channels = [r_grid, theta_grid, v_app_grid, yaw_grid]
-            if 'TSR' in group.columns:
-                tsr_grid = np.full_like(r_grid, group['TSR'].iloc[0])
-                x_channels.append(tsr_grid)
-                
+            # Modèles BEM (1/2/2+) : pas de canaux (yaw, TSR), seuls les canaux BEM sont ajoutés en plus de r/theta/v_app.
+            x_channels = [r_grid, theta_grid, v_app_grid]
+            if res_str not in ['1', '2'] and not has_plus:
+                x_channels.append(yaw_grid)
+                if 'TSR' in group.columns:
+                    tsr_grid = np.full_like(r_grid, group['TSR'].iloc[0])
+                    x_channels.append(tsr_grid)
+
             # Ajout des canaux BEM si mode 1 ou 2 ou 2+
             if res_str in ['1', '2'] or has_plus:
                 if inter == 'f':

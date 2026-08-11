@@ -286,7 +286,6 @@ def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, base
         current_ae = None
 
     if has_plus and current_ae is not None:
-        n_scalaires = 2 if 'TSR' in df_train.columns else 1
         with torch.no_grad():
             Y_bem_train = format_bem_as_Y(df_train, entree, inter, scaler_Y, bem_suffix, device)
             Y_bem_test  = format_bem_as_Y(df_test,  entree, inter, scaler_Y, bem_suffix, device)
@@ -297,8 +296,8 @@ def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, base
                 y_bem_te = te_cnn.reshape(Y_bem_test.size(0),  -1) if ae_nature == 'V' else te_cnn
                 z_bem_train = current_ae.encode(y_bem_tr)
                 z_bem_test  = current_ae.encode(y_bem_te)
-                X_train = torch.cat([X_train[:, :n_scalaires], z_bem_train], dim=1)
-                X_test  = torch.cat([X_test[:, :n_scalaires],  z_bem_test],  dim=1)
+                X_train = z_bem_train
+                X_test  = z_bem_test
             else:  # GM : z_BEM broadcasté en canaux constants (N, ae_dim, 36, 72)
                 y_bem_tr = Y_bem_train.reshape(Y_bem_train.size(0), -1) if ae_nature == 'V' else Y_bem_train
                 y_bem_te = Y_bem_test.reshape(Y_bem_test.size(0), -1) if ae_nature == 'V' else Y_bem_test

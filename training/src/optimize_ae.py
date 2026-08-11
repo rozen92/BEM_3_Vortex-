@@ -10,7 +10,7 @@ from sklearn.preprocessing import StandardScaler
 from core.models import ConvolutionalAutoencoder, LinearAutoencoder, TorchScaler
 from training.src.data_loader import format_data, get_D_tensor
 from training.src.trainer import fit_model, cross_validate
-from core.config import EPOCHS_AE, TRIALS_AE, LR_BOUNDS_AE_PRETRAIN, CV_SPLITS, AE_LAYERS_BOUNDS, format_ae_key, format_scaler_name
+from core.config import EPOCHS_AE, TRIALS_AE, LR_BOUNDS_AE_PRETRAIN, CV_SPLITS, AE_LAYERS_BOUNDS, PRUNER_REPORT_INTERVAL, format_ae_key, format_scaler_name
 
 class AEPhysicalLoss(nn.Module):
     """
@@ -127,7 +127,7 @@ def optimize_and_train_ae(df_train, residuelle, inter, latent_dim, ae_nature, n_
             criterion_builder=lambda train_idx, val_idx: criterion,
             epochs=EPOCHS_AE, lr=lr, n_splits=CV_SPLITS, device=device,
             inter=cv_inter, D_phys_full=D_tensor if physical_criterion is not None else None,
-            trial=trial
+            trial=trial, pruner_report_interval=PRUNER_REPORT_INTERVAL
         )
         return mean_val_loss
 
