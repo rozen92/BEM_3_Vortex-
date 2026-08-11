@@ -162,12 +162,15 @@ def format_data(df, entree, residuelle, inter, is_train=True, device='cpu', bem_
             
             r_grid = group['r'].values.reshape(num_r, num_theta)
             theta_grid = group['theta'].values.reshape(num_r, num_theta)
+            theta_rad_grid = np.radians(theta_grid)
+            cos_theta_grid = np.cos(theta_rad_grid)
+            sin_theta_grid = np.sin(theta_rad_grid)
             v_app_grid = compute_V_app(group).reshape(num_r, num_theta)
             yaw_grid = np.full_like(r_grid, group['yaw'].iloc[0])
-            
+
             # --- Création de l'Entrée X ---
-            
-            x_channels = [r_grid, theta_grid]
+            # theta est décomposé en (cos, sin) plutôt qu'un angle brut : évite la discontinuité 0°/360°.
+            x_channels = [r_grid, cos_theta_grid, sin_theta_grid]
             if res_str not in ['1', '2'] and not has_plus:
                 x_channels.append(yaw_grid)
                 if 'TSR' in group.columns:
