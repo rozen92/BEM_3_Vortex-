@@ -109,3 +109,8 @@ RATIO_THRESHOLD = 2.5
 AE_JSON_PATH = "training/hyperparametres/ae_hyperparameters.json"
 AE_WEIGHTS_DIR = "training/models/ae/"
 
+# =========================================================================
+# INTERVALLES DE CONFIANCE (BOOTSTRAP)
+# =========================================================================
+BOOTSTRAP_B = 1000
+

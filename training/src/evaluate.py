@@ -17,7 +17,7 @@ from training.src.data_loader import format_data, get_D_tensor, get_V_app_tensor
 from training.src.trainer import fit_model, cross_validate
 from core.physics import convert_v_to_f, get_geometry, compute_dynamic_pressure_D, compute_cp, compute_V_app
 from core.config import (EPOCHS_FINAL, CV_SPLITS, RATIO_THRESHOLD, RHO, OMEGA, R_ROTOR,
-                         AE_NATURES, AE_DIMS, AE_JSON_PATH, AE_WEIGHTS_DIR,
+                         AE_NATURES, AE_DIMS, AE_JSON_PATH, AE_WEIGHTS_DIR, BOOTSTRAP_B, RANDOM_SEED,
                          format_scaler_name, format_model_name, format_ae_key)
 
 XLSX_PATH = "training/performance/recap_scores.xlsx"
@@ -108,8 +108,8 @@ def denorm_and_reconstruct(df_test, preds_coeffs, entree, residuelle, inter, is_
         preds_denorm = preds_coeffs * D_test_flat
     return reconstruct_predictions(df_test, preds_denorm, entree, residuelle, inter, bem_suffix)
 
-def score_ABC(df_res):
-    Fn_p, Ft_p = df_res['Fn_pred'].values, df_res['Ft_pred'].values
+def score_ABC(df_res, col_fn_pred='Fn_pred', col_ft_pred='Ft_pred'):
+    Fn_p, Ft_p = df_res[col_fn_pred].values, df_res[col_ft_pred].values
     Fn_s, Ft_s = df_res['Fn_SVEN'].values, df_res['Ft_SVEN'].values
     D_res = df_res['D_phys'].values
     m_c = np.sqrt(np.mean(((Fn_p - Fn_s) / np.abs(Fn_s))**2)) * 100
@@ -117,9 +117,10 @@ def score_ABC(df_res):
     m_e = np.sqrt(np.mean(((Fn_p/D_res) - (Fn_s/D_res))**2)) * 100
     m_f = np.sqrt(np.mean(((Ft_p/D_res) - (Ft_s/D_res))**2)) * 100
 
-    cp_ct_pred = compute_cp(df_res, 'Fn_pred', 'Ft_pred').set_index('yaw')
-    Cp_p = df_res['yaw'].map(cp_ct_pred['Cp_pred']).values
-    Ct_p = df_res['yaw'].map(cp_ct_pred['Ct_pred']).values
+    model_name = col_fn_pred.replace('Fn_', '')
+    cp_ct_pred = compute_cp(df_res, col_fn_pred, col_ft_pred).set_index('yaw')
+    Cp_p = df_res['yaw'].map(cp_ct_pred[f'Cp_{model_name}']).values
+    Ct_p = df_res['yaw'].map(cp_ct_pred[f'Ct_{model_name}']).values
     cp_ct_sven = compute_cp(df_res, 'Fn_SVEN', 'Ft_SVEN').set_index('yaw')
     Cp_s = df_res['yaw'].map(cp_ct_sven['Cp_SVEN']).values
     Ct_s = df_res['yaw'].map(cp_ct_sven['Ct_SVEN']).values
@@ -127,6 +128,71 @@ def score_ABC(df_res):
     m_j = np.sqrt(np.mean(((Ct_p - Ct_s) / np.abs(Ct_s))**2)) * 100
 
     return m_c + m_d, m_e + m_f, m_i + m_j
+
+def _group_terms_ABC(df_res, col_fn_pred='Fn_pred', col_ft_pred='Ft_pred'):
+    """
+    Termes par groupe (yaw, [TSR]) pour reconstruire les scores A/B/C sur un
+    sous-échantillon quelconque de groupes à chaquetirage bootstrap. Pour un groupe g,
+    sum_e_x[g] est la somme (sur ses lignes) du terme d'erreur quadratique correspondant ; 
+    les scores s'obtiennent alors par sqrt(sum(sum_e_x[groupes tirés]) / sum(n_g[groupes tirés])) * 100,
+    identique à score_ABC pour n'importe quelle sélection (avec doublons) de groupes.
+    """
+    group_keys = ['yaw', 'TSR'] if 'TSR' in df_res.columns else ['yaw']
+    Fn_p, Ft_p = df_res[col_fn_pred].values, df_res[col_ft_pred].values
+    Fn_s, Ft_s = df_res['Fn_SVEN'].values, df_res['Ft_SVEN'].values
+    D_res = df_res['D_phys'].values
+
+    e_c = ((Fn_p - Fn_s) / np.abs(Fn_s))**2
+    e_d = ((Ft_p - Ft_s) / np.maximum(np.abs(Ft_s), 1.0))**2
+    e_e = ((Fn_p/D_res) - (Fn_s/D_res))**2
+    e_f = ((Ft_p/D_res) - (Ft_s/D_res))**2
+
+    model_name = col_fn_pred.replace('Fn_', '')
+    cp_ct_pred = compute_cp(df_res, col_fn_pred, col_ft_pred).set_index('yaw')
+    Cp_p = df_res['yaw'].map(cp_ct_pred[f'Cp_{model_name}']).values
+    Ct_p = df_res['yaw'].map(cp_ct_pred[f'Ct_{model_name}']).values
+    cp_ct_sven = compute_cp(df_res, 'Fn_SVEN', 'Ft_SVEN').set_index('yaw')
+    Cp_s = df_res['yaw'].map(cp_ct_sven['Cp_SVEN']).values
+    Ct_s = df_res['yaw'].map(cp_ct_sven['Ct_SVEN']).values
+    # Cp/Ct sont des valeurs par groupe broadcastées sur chaque ligne : sommer sur les lignes
+    # d'un groupe revient donc à multiplier par sa taille n_g, exactement comme dans score_ABC.
+    e_i = ((Cp_p - Cp_s) / np.abs(Cp_s))**2
+    e_j = ((Ct_p - Ct_s) / np.abs(Ct_s))**2
+
+    df_terms = pd.DataFrame({
+        **{k: df_res[k].values for k in group_keys},
+        'e_c': e_c, 'e_d': e_d, 'e_e': e_e, 'e_f': e_f, 'e_i': e_i, 'e_j': e_j,
+    })
+    grouped = df_terms.groupby(group_keys, sort=True)
+    n_g = grouped.size().to_numpy(dtype=np.float64)
+    sums = grouped[['e_c', 'e_d', 'e_e', 'e_f', 'e_i', 'e_j']].sum()
+    return n_g, sums['e_c'].to_numpy(), sums['e_d'].to_numpy(), sums['e_e'].to_numpy(), sums['e_f'].to_numpy(), sums['e_i'].to_numpy(), sums['e_j'].to_numpy()
+
+def bootstrap_ci_ABC(df_res, col_fn_pred='Fn_pred', col_ft_pred='Ft_pred', B=BOOTSTRAP_B, confidence=0.95, seed=RANDOM_SEED):
+    """
+    Intervalle de confiance bootstrap (percentile) sur les scores A/B/C. Le rééchantillonage se
+    fait par groupe (yaw, [TSR]) avec remise.
+    """
+    n_g, sum_e_c, sum_e_d, sum_e_e, sum_e_f, sum_e_i, sum_e_j = _group_terms_ABC(df_res, col_fn_pred, col_ft_pred)
+    n_groups = len(n_g)
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, n_groups, size=(B, n_groups))
+    n_g_b = n_g[idx].sum(axis=1)
+
+    def rms_pct(sum_e):
+        return np.sqrt(sum_e[idx].sum(axis=1) / n_g_b) * 100
+
+    scores_A = rms_pct(sum_e_c) + rms_pct(sum_e_d)
+    scores_B = rms_pct(sum_e_e) + rms_pct(sum_e_f)
+    scores_C = rms_pct(sum_e_i) + rms_pct(sum_e_j)
+
+    alpha = (1.0 - confidence) / 2.0
+    percentiles = (100 * alpha, 100 * (1.0 - alpha))
+    return {
+        'A': tuple(np.percentile(scores_A, percentiles)),
+        'B': tuple(np.percentile(scores_B, percentiles)),
+        'C': tuple(np.percentile(scores_C, percentiles)),
+    }
 
 def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, baseline_scores, pct=100, bem_suffix=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -395,6 +461,7 @@ def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, base
     err_ct_rel_u = np.abs((Ct_p_u - Ct_s_u) / np.abs(Ct_s_u)) * 100
 
     Score_A, Score_B, Score_C = m_c + m_d, m_e + m_f, m_i + m_j
+    ci_scores = bootstrap_ci_ABC(df_res)
     wd_fn = wasserstein_distance(Fn_s, Fn_p)
     wd_ft = wasserstein_distance(Ft_s, Ft_p)
     wd_cp = wasserstein_distance(Cp_s, Cp_p)
@@ -425,9 +492,9 @@ def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, base
     save_to_xlsx(XLSX_PATH, "recap_Ft", {"Modele": final_model_name, "err_abs_Nm": round(m_b, 4), "Std_err_abs_Nm": round(err_ft_abs.std(), 4), "Max_err_abs_Nm": round(err_ft_abs.max(), 4), "err_rel_%": round(m_d, 2), "Std_err_rel_%": round(err_ft_rel.std(), 2), "Max_err_rel_%": round(err_ft_rel.max(), 2), "err_normD_%": round(m_f, 2), "Std_err_normD_%": round(err_ft_normD.std(), 2), "Max_err_normD_%": round(err_ft_normD.max(), 2), "WD_Ft": round(wd_ft, 4)})
     save_to_xlsx(XLSX_PATH, "recap_C_P", {"Modele": final_model_name, "err_abs": round(m_g, 6), "Std_err_abs": round(err_cp_abs_u.std(), 6), "Max_err_abs": round(err_cp_abs_u.max(), 6), "err_%": round(m_i, 2), "Std_err_%": round(err_cp_rel_u.std(), 2), "Max_err_%": round(err_cp_rel_u.max(), 2), "WD_Cp": round(wd_cp, 6)})
     save_to_xlsx(XLSX_PATH, "recap_C_T", {"Modele": final_model_name, "err_abs": round(m_h, 6), "Std_err_abs": round(err_ct_abs_u.std(), 6), "Max_err_abs": round(err_ct_abs_u.max(), 6), "err_%": round(m_j, 2), "Std_err_%": round(err_ct_rel_u.std(), 2), "Max_err_%": round(err_ct_rel_u.max(), 2), "WD_Ct": round(wd_ct, 6)})
-    save_to_xlsx(XLSX_PATH, "recap_A", {"Modele": final_model_name, "Score_A": round(Score_A, 2), "CV_Score_A": round(mean_cv_score['A'], 2), "CV_Std_A": round(std_cv_score['A'], 2), "Std_A": round(np.std(np.concatenate([err_fn_rel, err_ft_rel])), 2), "Max_Err_A": round(np.max(np.concatenate([err_fn_rel, err_ft_rel])), 2)})
-    save_to_xlsx(XLSX_PATH, "recap_B", {"Modele": final_model_name, "Score_B": round(Score_B, 2), "CV_Score_B": round(mean_cv_score['B'], 2), "CV_Std_B": round(std_cv_score['B'], 2), "Std_B": round(np.std(np.concatenate([err_fn_normD, err_ft_normD])), 2), "Max_Err_B": round(np.max(np.concatenate([err_fn_normD, err_ft_normD])), 2)})
-    save_to_xlsx(XLSX_PATH, "recap_C", {"Modele": final_model_name, "Score_C": round(Score_C, 2), "CV_Score_C": round(mean_cv_score['C'], 2), "CV_Std_C": round(std_cv_score['C'], 2), "Std_C": round(np.std(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2), "Max_Err_C": round(np.max(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2)})
+    save_to_xlsx(XLSX_PATH, "recap_A", {"Modele": final_model_name, "Score_A": round(Score_A, 2), "IC95_inf_A": round(ci_scores['A'][0], 2), "IC95_sup_A": round(ci_scores['A'][1], 2), "CV_Score_A": round(mean_cv_score['A'], 2), "CV_Std_A": round(std_cv_score['A'], 2), "Std_A": round(np.std(np.concatenate([err_fn_rel, err_ft_rel])), 2), "Max_Err_A": round(np.max(np.concatenate([err_fn_rel, err_ft_rel])), 2)})
+    save_to_xlsx(XLSX_PATH, "recap_B", {"Modele": final_model_name, "Score_B": round(Score_B, 2), "IC95_inf_B": round(ci_scores['B'][0], 2), "IC95_sup_B": round(ci_scores['B'][1], 2), "CV_Score_B": round(mean_cv_score['B'], 2), "CV_Std_B": round(std_cv_score['B'], 2), "Std_B": round(np.std(np.concatenate([err_fn_normD, err_ft_normD])), 2), "Max_Err_B": round(np.max(np.concatenate([err_fn_normD, err_ft_normD])), 2)})
+    save_to_xlsx(XLSX_PATH, "recap_C", {"Modele": final_model_name, "Score_C": round(Score_C, 2), "IC95_inf_C": round(ci_scores['C'][0], 2), "IC95_sup_C": round(ci_scores['C'][1], 2), "CV_Score_C": round(mean_cv_score['C'], 2), "CV_Std_C": round(std_cv_score['C'], 2), "Std_C": round(np.std(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2), "Max_Err_C": round(np.max(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2)})
     pbar.set_postfix_str(f"Métriques : {time.perf_counter()-t0:.1f}s")
     pbar.update(1)
     pbar.close()
@@ -472,14 +539,16 @@ def evaluate_baselines(df_test, bem_suffix):
     wd_ct = wasserstein_distance(Ct_s, Ct_b)
     wd_total = wasserstein_distance(np.concatenate([Fn_s, Ft_s]), np.concatenate([Fn_b, Ft_b]))
 
+    ci_scores = bootstrap_ci_ABC(df_bem, col_fn_pred=fn_bem_col, col_ft_pred=ft_bem_col)
+
     base_dict = {"Modele": f"BASELINE_BEM_{bem_suffix}"}
     save_to_xlsx(XLSX_PATH, "recap_super", {**base_dict, "BEM_Ratio_C": 1.00, "Best_BEM_Ratio_AB": 1.00, "WD_Total": round(wd_total, 4)})
     save_to_xlsx(XLSX_PATH, "recap_Fn", {**base_dict, "err_abs_Nm": round(m_a, 4), "Std_err_abs_Nm": round(err_fn_abs.std(), 4), "Max_err_abs_Nm": round(err_fn_abs.max(), 4), "err_rel_%": round(m_c, 2), "Std_err_rel_%": round(err_fn_rel.std(), 2), "Max_err_rel_%": round(err_fn_rel.max(), 2), "err_normD_%": round(m_e, 2), "Std_err_normD_%": round(err_fn_normD.std(), 2), "Max_err_normD_%": round(err_fn_normD.max(), 2), "WD_Fn": round(wd_fn, 4)})
     save_to_xlsx(XLSX_PATH, "recap_Ft", {**base_dict, "err_abs_Nm": round(m_b, 4), "Std_err_abs_Nm": round(err_ft_abs.std(), 4), "Max_err_abs_Nm": round(err_ft_abs.max(), 4), "err_rel_%": round(m_d, 2), "Std_err_rel_%": round(err_ft_rel.std(), 2), "Max_err_rel_%": round(err_ft_rel.max(), 2), "err_normD_%": round(m_f, 2), "Std_err_normD_%": round(err_ft_normD.std(), 2), "Max_err_normD_%": round(err_ft_normD.max(), 2), "WD_Ft": round(wd_ft, 4)})
     save_to_xlsx(XLSX_PATH, "recap_C_P", {**base_dict, "err_abs": round(m_g, 6), "Std_err_abs": round(err_cp_abs_u.std(), 6), "Max_err_abs": round(err_cp_abs_u.max(), 6), "err_%": round(m_i, 2), "Std_err_%": round(err_cp_rel_u.std(), 2), "Max_err_%": round(err_cp_rel_u.max(), 2), "WD_Cp": round(wd_cp, 6)})
     save_to_xlsx(XLSX_PATH, "recap_C_T", {**base_dict, "err_abs": round(m_h, 6), "Std_err_abs": round(err_ct_abs_u.std(), 6), "Max_err_abs": round(err_ct_abs_u.max(), 6), "err_%": round(m_j, 2), "Std_err_%": round(err_ct_rel_u.std(), 2), "Max_err_%": round(err_ct_rel_u.max(), 2), "WD_Ct": round(wd_ct, 6)})
-    save_to_xlsx(XLSX_PATH, "recap_A", {**base_dict, "Score_A": round(m_c+m_d, 2), "Std_A": round(np.std(np.concatenate([err_fn_rel, err_ft_rel])), 2), "Max_Err_A": round(np.max(np.concatenate([err_fn_rel, err_ft_rel])), 2)})
-    save_to_xlsx(XLSX_PATH, "recap_B", {**base_dict, "Score_B": round(m_e+m_f, 2), "Std_B": round(np.std(np.concatenate([err_fn_normD, err_ft_normD])), 2), "Max_Err_B": round(np.max(np.concatenate([err_fn_normD, err_ft_normD])), 2)})
-    save_to_xlsx(XLSX_PATH, "recap_C", {**base_dict, "Score_C": round(m_i+m_j, 2), "Std_C": round(np.std(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2), "Max_Err_C": round(np.max(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2)})
+    save_to_xlsx(XLSX_PATH, "recap_A", {**base_dict, "Score_A": round(m_c+m_d, 2), "IC95_inf_A": round(ci_scores['A'][0], 2), "IC95_sup_A": round(ci_scores['A'][1], 2), "Std_A": round(np.std(np.concatenate([err_fn_rel, err_ft_rel])), 2), "Max_Err_A": round(np.max(np.concatenate([err_fn_rel, err_ft_rel])), 2)})
+    save_to_xlsx(XLSX_PATH, "recap_B", {**base_dict, "Score_B": round(m_e+m_f, 2), "IC95_inf_B": round(ci_scores['B'][0], 2), "IC95_sup_B": round(ci_scores['B'][1], 2), "Std_B": round(np.std(np.concatenate([err_fn_normD, err_ft_normD])), 2), "Max_Err_B": round(np.max(np.concatenate([err_fn_normD, err_ft_normD])), 2)})
+    save_to_xlsx(XLSX_PATH, "recap_C", {**base_dict, "Score_C": round(m_i+m_j, 2), "IC95_inf_C": round(ci_scores['C'][0], 2), "IC95_sup_C": round(ci_scores['C'][1], 2), "Std_C": round(np.std(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2), "Max_Err_C": round(np.max(np.concatenate([err_cp_rel_u, err_ct_rel_u])), 2)})
 
     return {'A': m_c + m_d, 'B': m_e + m_f, 'C': m_i + m_j}

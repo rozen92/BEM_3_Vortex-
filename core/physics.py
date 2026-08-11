@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import pandas as pd
 import os
-from scipy.interpolate import interp1d, RegularGridInterpolator
+from scipy.interpolate import interp1d
 from core.config import RHO, U_INFTY, PITCH_RAD, R_ROTOR, OMEGA, Dist_R
 
 ## Calcul (en une fois) de dl_map et dr pour le calcul des puissances
@@ -14,6 +14,55 @@ for i in range(len(r_unique)):
         nodes.append(next_node)
 
 dl_map = dict(zip(r_unique, np.diff(nodes)))
+
+
+# ==========================================
+# INTERPOLATION AKIMA (portage numpy de PolarSurrogate, core/models.py,
+# pour que la reconstruction des efforts à partir des vitesses utilise
+# la même spline C1 qu'à l'entraînement/optimisation)
+# ==========================================
+def _akima_tangents(x, y):
+    """ y: (n_courbes, n_points). Retourne les tangentes Akima, même forme que y. """
+    dx = x[1:] - x[:-1]
+    dy = y[:, 1:] - y[:, :-1]
+    m = dy / dx
+    m_pad = np.zeros((y.shape[0], m.shape[1] + 4))
+    m_pad[:, 2:-2] = m
+    m_pad[:, 1] = 2 * m[:, 0] - m[:, 1]
+    m_pad[:, 0] = 2 * m_pad[:, 1] - m[:, 0]
+    m_pad[:, -2] = 2 * m[:, -1] - m[:, -2]
+    m_pad[:, -1] = 2 * m_pad[:, -2] - m[:, -1]
+
+    dm = np.abs(m_pad[:, 1:] - m_pad[:, :-1])
+    w_right, w_left = dm[:, :-2], dm[:, 2:]
+
+    denom = w_left + w_right
+    mask = denom == 0
+    t = np.zeros_like(y)
+    t_num = w_right * m_pad[:, 1:-2] + w_left * m_pad[:, 2:-1]
+
+    t[~mask] = t_num[~mask] / denom[~mask]
+    t[mask] = 0.5 * (m_pad[:, 1:-2][mask] + m_pad[:, 2:-1][mask])
+    return t
+
+def _akima_eval(x_new, idx_r, x, y_grid, t_grid):
+    """ Évalue la spline (Hermite cubique, tangentes Akima) au point (idx_r, x_new). """
+    idx_x = np.searchsorted(x, x_new) - 1
+    idx_x = np.clip(idx_x, 0, len(x) - 2)
+
+    x0, x1 = x[idx_x], x[idx_x + 1]
+    dx = x1 - x0
+    y0, y1 = y_grid[idx_r, idx_x], y_grid[idx_r, idx_x + 1]
+    t0, t1 = t_grid[idx_r, idx_x], t_grid[idx_r, idx_x + 1]
+
+    t = (x_new - x0) / dx
+    t2, t3 = t * t, t * t * t
+    h00 = 2 * t3 - 3 * t2 + 1
+    h10 = t3 - 2 * t2 + t
+    h01 = -2 * t3 + 3 * t2
+    h11 = t3 - t2
+
+    return h00 * y0 + h10 * dx * t0 + h01 * y1 + h11 * dx * t1
 
 
 # ==========================================
@@ -50,21 +99,31 @@ class BladeGeometry:
         
         df_cl = df_airfoils.pivot(index='alpha_deg', columns='r', values='Cl')
         df_cd = df_airfoils.pivot(index='alpha_deg', columns='r', values='Cd')
-        
+
         cl_matrix = df_cl.loc[alphas_deg, radii].values
         cd_matrix = df_cd.loc[alphas_deg, radii].values
-        
-        self._interp_cl = RegularGridInterpolator((alphas_deg, radii), cl_matrix, method='linear', bounds_error=False, fill_value=None)
-        self._interp_cd = RegularGridInterpolator((alphas_deg, radii), cd_matrix, method='linear', bounds_error=False, fill_value=None)
+
+        # Interpolation Akima le long de alpha (une courbe par section r), cohérente avec
+        # PolarSurrogate (core/models.py) utilisé à l'entraînement/optimisation. Comme les r
+        # interrogés correspondent toujours aux sections de la maquette, on sélectionne la
+        # section la plus proche (idem PolarSurrogate) plutôt que d'interpoler en r.
+        self._alphas_deg = alphas_deg
+        self._radii = radii
+        self._y_cl = cl_matrix.T  # (n_r, n_alpha)
+        self._y_cd = cd_matrix.T
+        self._t_cl = _akima_tangents(self._alphas_deg, self._y_cl)
+        self._t_cd = _akima_tangents(self._alphas_deg, self._y_cd)
 
     def get_cl_cd(self, r, alpha_deg):
-        """ 
-        Retourne Cl et Cd interpolés. 
+        """
+        Retourne Cl et Cd interpolés.
         ATTENTION: alpha_deg doit être en DEGRÉS.
         """
-        cl = self._interp_cl((alpha_deg, r))
-        cd = self._interp_cd((alpha_deg, r))
-        return float(cl), float(cd)
+        idx_r = int(np.argmin(np.abs(self._radii - r)))
+        alpha_arr = np.atleast_1d(alpha_deg)
+        cl = _akima_eval(alpha_arr, idx_r, self._alphas_deg, self._y_cl, self._t_cl)
+        cd = _akima_eval(alpha_arr, idx_r, self._alphas_deg, self._y_cd, self._t_cd)
+        return float(cl[0]), float(cd[0])
 
 
 geom_db = None
