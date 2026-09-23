@@ -176,18 +176,13 @@ def optimize(df_train, entree, residuelle, inter, has_ae, option, model_base_nam
             current_ae, latent_dim, ae_nature, ae_dim = None, 0, 'None', 0
 
         # Encodage BEM dans l'espace latent pour '2+' (même espace entrée/sortie)
+        # '2+' n'existe que pour entree='GV' (GM_2+ n'est pas supporté, cf. format_data).
         if has_plus and current_ae is not None:
             with torch.no_grad():
-                if entree == 'GV':
-                    y_bem_cnn = gv_to_gm_format(Y_bem_full)
-                    y_bem_input = y_bem_cnn.reshape(Y_bem_full.size(0), -1) if ae_nature == 'V' else y_bem_cnn
-                    z_bem = current_ae.encode(y_bem_input)
-                    X_trial = z_bem
-                else:  # GM
-                    y_bem_input = Y_bem_full.reshape(Y_bem_full.size(0), -1) if ae_nature == 'V' else Y_bem_full
-                    z_bem = current_ae.encode(y_bem_input)
-                    zb = z_bem[:, :, None, None].expand(-1, -1, 36, 72).contiguous()
-                    X_trial = torch.cat([X_full[:, :-2], zb], dim=1)
+                y_bem_cnn = gv_to_gm_format(Y_bem_full)
+                y_bem_input = y_bem_cnn.reshape(Y_bem_full.size(0), -1) if ae_nature == 'V' else y_bem_cnn
+                z_bem = current_ae.encode(y_bem_input)
+                X_trial = z_bem
         else:
             X_trial = X_full
 

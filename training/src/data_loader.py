@@ -81,6 +81,8 @@ def format_data(df, entree, residuelle, inter, is_train=True, device='cpu', bem_
     has_plus = '+' in str(residuelle)
     if needs_bem_suffix(residuelle) and bem_suffix is None:
         raise ValueError(f"bem_suffix requis pour residuelle={residuelle!r}")
+    if entree == 'GM' and has_plus:
+        raise ValueError("GM_2+ n'existe pas : le résiduel '2+' n'est supporté que pour entree='GV'.")
 
     X_list = []
     Y_list = []
@@ -166,22 +168,26 @@ def format_data(df, entree, residuelle, inter, is_train=True, device='cpu', bem_
             cos_theta_grid = np.cos(theta_rad_grid)
             sin_theta_grid = np.sin(theta_rad_grid)
             v_app_grid = compute_V_app(group).reshape(num_r, num_theta)
+            chord_grid = geom.get_chord(group['r'].values).reshape(num_r, num_theta)
+            D_grid_x = 0.5 * RHO * v_app_grid**2 * np.abs(chord_grid)
             yaw_grid = np.full_like(r_grid, group['yaw'].iloc[0])
 
             # --- Création de l'Entrée X ---
-            # theta est décomposé en (cos, sin) plutôt qu'un angle brut : évite la discontinuité 0°/360°.
-            x_channels = [r_grid, cos_theta_grid, sin_theta_grid]
+            # Modèle '0' (sans BEM) : r, theta (cos/sin), yaw, TSR, v_app, D.
+            # Modèles BEM (1/2) : X ne dépend que du champ de forces BEM (plus de r/theta/yaw/TSR/v_app/D).
+            x_channels = []
             if res_str not in ['1', '2'] and not has_plus:
-                x_channels.append(yaw_grid)
+                # theta est décomposé en (cos, sin) plutôt qu'un angle brut : évite la discontinuité 0°/360°.
+                x_channels.extend([r_grid, cos_theta_grid, sin_theta_grid, yaw_grid])
                 if 'TSR' in group.columns:
                     tsr_grid = np.full_like(r_grid, group['TSR'].iloc[0])
                     x_channels.append(tsr_grid)
+                x_channels.append(v_app_grid)
+                x_channels.append(D_grid_x)
 
             # Ajout des canaux BEM si mode 1 ou 2 ou 2+
             if res_str in ['1', '2'] or has_plus:
                 if inter == 'f':
-                    chord_grid_x = geom.get_chord(group['r'].values).reshape(num_r, num_theta)
-                    D_grid_x = 0.5 * RHO * v_app_grid**2 * np.abs(chord_grid_x)
                     x_channels.append(group[f'Fn_BEM_{bem_suffix}'].values.reshape(num_r, num_theta) / D_grid_x)
                     x_channels.append(group[f'Ft_BEM_{bem_suffix}'].values.reshape(num_r, num_theta) / D_grid_x)
                 else:
@@ -201,12 +207,8 @@ def format_data(df, entree, residuelle, inter, is_train=True, device='cpu', bem_
                     group['Fn_delta'] = group['Fn_SVEN'] - group[f'Fn_BEM_{bem_suffix}']
                     group['Ft_delta'] = group['Ft_SVEN'] - group[f'Ft_BEM_{bem_suffix}']
 
-                v_app_sq = v_app_grid**2
-                chord_grid = geom.get_chord(group['r'].values).reshape(num_r, num_theta)
-                D_grid = 0.5 * RHO * v_app_sq * np.abs(chord_grid)
-
-                y1 = group[c1].values.reshape(num_r, num_theta) / D_grid
-                y2 = group[c2].values.reshape(num_r, num_theta) / D_grid
+                y1 = group[c1].values.reshape(num_r, num_theta) / D_grid_x
+                y2 = group[c2].values.reshape(num_r, num_theta) / D_grid_x
 
             else: # 'v'
                 c1, c2 = ('an_SVEN', 'at_SVEN') if res_str in ['0', '2'] else ('an_delta', 'at_delta')

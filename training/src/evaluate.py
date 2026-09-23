@@ -286,27 +286,18 @@ def evaluator(df_train, df_test, entree, residuelle, inter, has_ae, option, base
         current_ae = None
 
     if has_plus and current_ae is not None:
+        # '2+' n'existe que pour entree='GV' (GM_2+ n'est pas supporté, cf. format_data).
         with torch.no_grad():
             Y_bem_train = format_bem_as_Y(df_train, entree, inter, scaler_Y, bem_suffix, device)
             Y_bem_test  = format_bem_as_Y(df_test,  entree, inter, scaler_Y, bem_suffix, device)
-            if entree == 'GV':
-                tr_cnn = gv_to_gm_format(Y_bem_train)
-                te_cnn = gv_to_gm_format(Y_bem_test)
-                y_bem_tr = tr_cnn.reshape(Y_bem_train.size(0), -1) if ae_nature == 'V' else tr_cnn
-                y_bem_te = te_cnn.reshape(Y_bem_test.size(0),  -1) if ae_nature == 'V' else te_cnn
-                z_bem_train = current_ae.encode(y_bem_tr)
-                z_bem_test  = current_ae.encode(y_bem_te)
-                X_train = z_bem_train
-                X_test  = z_bem_test
-            else:  # GM : z_BEM broadcasté en canaux constants (N, ae_dim, 36, 72)
-                y_bem_tr = Y_bem_train.reshape(Y_bem_train.size(0), -1) if ae_nature == 'V' else Y_bem_train
-                y_bem_te = Y_bem_test.reshape(Y_bem_test.size(0), -1) if ae_nature == 'V' else Y_bem_test
-                z_bem_train = current_ae.encode(y_bem_tr)
-                z_bem_test  = current_ae.encode(y_bem_te)
-                zb_tr = z_bem_train[:, :, None, None].expand(-1, -1, 36, 72).contiguous()
-                zb_te = z_bem_test[:, :, None, None].expand(-1, -1, 36, 72).contiguous()
-                X_train = torch.cat([X_train[:, :-2], zb_tr], dim=1)
-                X_test  = torch.cat([X_test[:, :-2],  zb_te],  dim=1)
+            tr_cnn = gv_to_gm_format(Y_bem_train)
+            te_cnn = gv_to_gm_format(Y_bem_test)
+            y_bem_tr = tr_cnn.reshape(Y_bem_train.size(0), -1) if ae_nature == 'V' else tr_cnn
+            y_bem_te = te_cnn.reshape(Y_bem_test.size(0),  -1) if ae_nature == 'V' else te_cnn
+            z_bem_train = current_ae.encode(y_bem_tr)
+            z_bem_test  = current_ae.encode(y_bem_te)
+            X_train = z_bem_train
+            X_test  = z_bem_test
 
     pbar.set_postfix_str(f"Données & AE : {time.perf_counter()-t0:.1f}s")
     pbar.update(1)
